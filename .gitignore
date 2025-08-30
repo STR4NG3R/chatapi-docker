@@ -133,3 +133,4 @@ dist
 
 database/
 n8n/n8n_data/
+storage/
