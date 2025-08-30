@@ -144,3 +144,11 @@ If you want to help us with any amount, send it to will.phelipe@gmail.com PayPal
 _If you need any further assistance, don't hesitate to ask._
 
 _Good luck!_
+        if [ ! -f /app/storage/.setup_done ]; then
+          echo 'Running initial db:setup...';
+          bundle exec rails db:setup;
+          touch /app/storage/.setup_done;
+        else
+          echo 'Running db:migrate...';
+          bundle exec rails db:migrate;
+        fi

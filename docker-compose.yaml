@@ -1,111 +1,76 @@
 services:
   base: &base
     image: sendingtk/chatwoot:v3.12.6
-    container_name: chatwoot
-    hostname: lchatwoot
     env_file: .env 
-    stdin_open: true 
-    tty: true  
+    depends_on:
+      - postgres-chat
+      - redis
     networks: 
       - evolution-network     
-  
-  rails:
-    <<: *base
-    container_name: chatwoot-rails
-    hostname: chatwoot-rails
-    depends_on:
-      - postgres-chatwoot
-      - redis-chatwoot
-    environment:
-      - NODE_ENV=production
-      - RAILS_ENV=production
-    networks: 
-      - evolution-network
-    entrypoint: docker/entrypoints/rails.sh
-    command: ['bundle', 'exec', 'rails', 's', '-p', '3000', '-b', '0.0.0.0']
 
-  sidekiq:
+  chatwoot-worker:
     <<: *base
-    container_name: chatwoot-sidekiq
-    hostname: chatwoot-sidekiq
+    container_name: chatwoot-worker
+    command: bundle exec sidekiq -C config/sidekiq.yml
     depends_on:
-      - postgres-chatwoot
-      - redis-chatwoot
+      - chatwoot
     environment:
-      - NODE_ENV=production
-      - RAILS_ENV=production
-    networks: 
-      - evolution-network
-    restart: unless-stopped
-    command: ['bundle', 'exec', 'sidekiq', '-C', 'config/sidekiq.yml']
+      POSTGRES_DB: chatwoot_production
 
-  postgres-chatwoot:
-    image: postgres:14
-    container_name: postgres-chatwoot
-    hostname: postgres-chatwoot
+  chatwoot:
+    <<: *base
+    container_name: chatwoot
+    hostname: chatwoot
+    volumes:
+      - ./storage:/app/storage  # persist setup flag
+    environment:
+      NODE_ENV: production
+      ENABLE_ACCOUNT_SIGNUP: "true"
+    command: >
+      sh -c "
+        # bundle exec rails db:chatwoot_prepare &&
+        rm -f tmp/pids/server.pid &&
+        bundle exec rails s -b 0.0.0.0
+      "
+
+  n8n:
+    image: n8nio/n8n:1.79.3
+    container_name: n8n
     restart: always
+    env_file: 
+      - ./n8n/.env
+    networks:
+      - evolution-network
+    volumes:
+      - ./n8n_data:/home/node/.n8n
+    environment:
+      - GENERIC_TIMEZONE=America/Mexico_City
+      - NODE_ENV=production
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_USER}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_PASSWORD}
+      - WEBHOOK_URL=http://n8n.localhost/
+      - EXECUTIONS_PROCESS=queue
+      - QUEUE_TYPE=redis
+      - QUEUE_REDIS_HOST=redis
+      - QUEUE_REDIS_PORT=6379
+      - QUEUE_REDIS_PASSWORD=${REDIS_PASSWORD}
+    user: "1000:1000"   # 👈 fuerza a usar tu mismo usuario del host
+
+  postgres-chat:
+    image: ankane/pgvector
+    restart: always
+    environment:
+      POSTGRES_DB: chatwoot
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: chatwoot
     volumes:
       - ./database/chatwoot/postgres:/var/lib/postgresql/data
-    environment:
-      - POSTGRES_DB=chatwoot
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=chatwoot
-    networks: 
-      - evolution-network
-    
-  postgres-evolution:
-    image: postgres:14
-    container_name: postgres-evolution
-    hostname: postgres-evolution
-    restart: always
-    volumes:
-      - ./database/evolution/postgres:/var/lib/postgresql/data
-    environment:
-      - POSTGRES_DB=evolution
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=evolution
-    networks: 
-      - evolution-network
-  
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    container_name: chatwoot-pgadmin4
-    hostname: chatwoot-pgadmin4
-    environment:
-      PGADMIN_DEFAULT_EMAIL: "demo@demo.com.br"
-      PGADMIN_DEFAULT_PASSWORD: "PgAdmin2021!"
-    depends_on:
-      - postgres-chatwoot
     networks:
       - evolution-network
 
-  redis-chatwoot:
-    image: redis:alpine
-    container_name: redis-chatwoot
-    hostname: redis-chatwoot
-    restart: always
-    command: ["sh", "-c", "redis-server --requirepass \"$REDIS_PASSWORD\""]
-    env_file: .env
-    volumes:
-      - ./database/chatwoot/redis:/data
-    networks: 
-      - evolution-network
-
-  redis-evolution:
-    image: redis:alpine
-    container_name: redis-evolution
-    hostname: redis-evolution
-    restart: always
-    command: [ "redis-server", "--appendonly", "yes", "--port", "6379" ]
-    env_file:
-      - ./evolution-api/.env
-    volumes:
-      - ./database/evolution/redis:/data
-    networks: 
-      - evolution-network
-  
   evolution:
-    image: atendai/evolution-api:v2.2.0
+    image: atendai/evolution-api:v2.1.1
     container_name: evolution-api
     volumes:
       - ./evolution-api/evolution_instances:/evolution/instances
@@ -113,23 +78,62 @@ services:
       - evolution-network
     env_file:
       - ./evolution-api/.env
+    depends_on:
+      - postgres-chat
+      - redis
 
-  nginx:
-    build: 
-      context: ./nginx
-      dockerfile: Dockerfile
-    container_name: nginx
-    entrypoint: nginx -g "daemon off;"
+
+  # 🔥 Single Redis for all
+  redis:
+    image: redis:alpine
+    container_name: redis
+    restart: always
+    env_file: .env
+    command: [
+      "redis-server",
+      "--appendonly", "yes",
+      "--port", "6379",
+      "--requirepass", "${REDIS_PASSWORD}"
+    ]
+    volumes:
+      - ./database/redis:/data
+    networks:
+      - evolution-network
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: chatwoot-pgadmin4
+    environment:
+      PGADMIN_DEFAULT_EMAIL: demo@demo.com.br
+      PGADMIN_DEFAULT_PASSWORD: PgAdmin2021!
+    depends_on:
+      - postgres-chat
+    networks:
+      - evolution-network
+
+  # 🚀 Caddy Reverse Proxy
+  caddy-chat:
+    image: caddy:2.9
+    restart: unless-stopped
     ports:
-      - "8080:8080" #Evolution
-      - "8081:8081" #Chatwoot
-      - "8082:8082" #pgadmin
-    networks: 
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
       - evolution-network
     depends_on:
+      - chatwoot
       - evolution
+      - pgadmin
 
-networks: 
+
+networks:
   evolution-network:
-    name: evolution-network
     driver: bridge
+
+volumes:
+  caddy_data:
+  caddy_config:

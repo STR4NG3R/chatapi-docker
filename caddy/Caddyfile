@@ -1,0 +1,16 @@
+chatwoot.localhost {
+    reverse_proxy chatwoot:3000
+}
+
+evolution.localhost {
+    reverse_proxy evolution-api:8080
+}
+
+pgadmin.localhost {
+    reverse_proxy chatwoot-pgadmin4:80
+}
+
+n8n.localhost {
+    reverse_proxy n8n:5678
+    encode gzip
+}
